@@ -122,10 +122,8 @@ user_input = pd.DataFrame({
     'Disaster Subtype':[dst],
     "Total Damage ('000 US$)":[td]
 })
-if sy >=2025:
-  Prediction = td
-  print(Prediction + "Predicted damage is the same as the input due to a small/unrealistic time frame")
-elif:
+
+
   Prediction = pipeline.predict(user_input)
   print('Predicted adjusted damage in USD:' , Prediction)
 
