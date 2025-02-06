@@ -1,3 +1,4 @@
+!pip install catboost
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
@@ -6,18 +7,20 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error
 from sklearn.metrics import mean_absolute_error
 from sklearn.metrics import r2_score
-from sklearn.metrics import accuracy_score
-from sklearn.preprocessing import LabelBinarizer
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
+from sklearn.model_selection import RandomizedSearchCV
+from sklearn.model_selection import cross_val_score
+from catboost import CatBoostRegressor
+import matplotlib.pyplot as plt
 import seaborn as sns
 from google.colab import drive
 drive.mount('/content/drive')
 try:
-  data = pd.read_csv('/content/drive/MyDrive/Project data/Natural disasters dataset.csv', encoding='utf-8')
+  data = pd.read_csv('/content/drive/MyDrive/Project data/Datasets/Natural disasters dataset.csv', encoding='utf-8')
 except UnicodeDecodeError:
-  with open('/content/drive/MyDrive/Project data/Natural disasters dataset.csv', encoding='utf-8' , errors='ignore') as f:
+  with open('/content/drive/MyDrive/Project data/Datasets/Natural disasters dataset.csv', encoding='utf-8' , errors='ignore') as f:
     data = pd.read_csv(f)
 
 
@@ -35,25 +38,57 @@ upper_bound = Q3 + 1.5 * IQR
 
 # Show outliers (values outside the bounds)
 outliers = data[(data["Total Damage, Adjusted ('000 US$)"] < lower_bound) | (data["Total Damage, Adjusted ('000 US$)"] > upper_bound)]
-#print("Outliers:", outliers)
+
 
 # Remove outliers
 data_cleaned = data[(data["Total Damage, Adjusted ('000 US$)"] >= lower_bound) & (data["Total Damage, Adjusted ('000 US$)"] <= upper_bound)]
-#print(data_cleaned)
 
-x = data_cleaned[['Start Year', 'Disaster Type' , 'Disaster Subtype' , "Total Damage ('000 US$)" , "CPI"]]
+x = data_cleaned[['Start Year', 'Disaster Type' , 'Disaster Subtype' , "Total Damage ('000 US$)"]]
 y = data_cleaned["Total Damage, Adjusted ('000 US$)"]
 
+data_cleaned = data_cleaned.drop_duplicates()
 
-# One-Hot encoding
-ED = OneHotEncoder(sparse_output = True).fit_transform(x)
-ED_train, ED_test, y_train, y_test = train_test_split(ED, y, train_size = 0.8 , test_size=0.2 , random_state=42)
+categorical_features = ['Disaster Type', 'Disaster Subtype']
+x[categorical_features] = x[categorical_features].astype('category')
 
+# Train-test split
+x_train, x_test, y_train, y_test = train_test_split(x, y, train_size=0.7, test_size=0.3, random_state=42)
 
-# Model ftiitng and prediction
-model = RandomForestRegressor(random_state=42)
-model.fit(ED_train, y_train)
-y_pred = model.predict(ED_test)
+model = CatBoostRegressor(
+    iterations=1000,          # Number of boosting rounds
+    learning_rate=0.03,       # Smaller learning rate for smoother learning
+    depth=7,                 # Depth of trees
+    random_state=42,          # Reproducibility
+    verbose=100,               # Print progress every 100 iterations
+    early_stopping_rounds=50
+)
+
+param_dist = {
+    'iterations': [500, 1000, 1500 , 2000],
+    'learning_rate': [0.01, 0.03, 0.05],
+    'depth': [6, 7],       # Controls tree depth
+    'l2_leaf_reg': [10, 20, 50],  # L2 regularization
+    'bagging_temperature': [0.5, 1, 2],  # Controls randomness
+    'subsample': [0.8, 1.0]    # Row sampling
+}
+random_search = RandomizedSearchCV(
+    estimator=CatBoostRegressor(verbose=0, random_state=42),
+    param_distributions=param_dist,
+    n_iter=10,  # Reduce iterations
+    scoring='r2',
+    cv=5,       # Reduce cross-validation folds
+    verbose=2,
+    random_state=42,
+    n_jobs=-1
+)
+
+random_search.fit(x_train, y_train, cat_features=categorical_features)
+
+# Get the best model
+best_catboost = random_search.best_estimator_
+
+# Make predictions
+y_pred = best_catboost.predict(x_test)
 
 
 # Graphs to be able to visualize difference between predicted and actual data
@@ -69,6 +104,8 @@ mse = mean_squared_error(y_test, y_pred)
 mae = mean_absolute_error(y_test, y_pred)
 r2 = r2_score(y_test, y_pred)
 std_dev = np.std(data_cleaned['Total Damage, Adjusted (\'000 US$)'])
+correlation = data_cleaned[['Total Damage, Adjusted (\'000 US$)', 'No. Affected', 'Total Affected', "Total Damage ('000 US$)", 'Total Deaths']].corr()
+print(correlation)
 
 
 
@@ -78,59 +115,51 @@ print("R2 score:" , r2)
 print('Standard Deviation:' , std_dev)
 
 
+# Predictions using the best model from RandomizedSearchCV
+y_train_pred = best_catboost.predict(x_train)
+y_test_pred = best_catboost.predict(x_test)
+
+# Training Performance
+train_mae = mean_absolute_error(y_train, y_train_pred)
+train_mse = mean_squared_error(y_train, y_train_pred)
+train_r2 = r2_score(y_train, y_train_pred)
+
+# Testing Performance
+test_mae = mean_absolute_error(y_test, y_test_pred)
+test_mse = mean_squared_error(y_test, y_test_pred)
+test_r2 = r2_score(y_test, y_test_pred)
+
+# Print results
+print(f"Training MAE: {train_mae}, Testing MAE: {test_mae}")
+print(f"Training MSE: {train_mse}, Testing MSE: {test_mse}")
+print(f"Training R²: {train_r2}, Testing R²: {test_r2}")
 
 
 
-# Define preprocessing for categorical and numerical features
-categorical_features = ['Disaster Type', 'Disaster Subtype']
-numerical_features = ['Start Year', "Total Damage ('000 US$)" , "CPI"]
+while True:
+    try:
+        sy = int(input('Enter the start year:'))
+        if sy in range(2023 , 2026):
+            raise ValueError("The predicted losses will be the same as the total damage due to the year being too close to the current year/CPI will be 100.")
+        dt = input("Enter the disaster type:")
+        dst = input("Enter the disaster subtype:")
+        td = float(input("Enter the total damage (in USD):"))
+        break
+    except ValueError as e:
+        print(f"Invalid input: {e}")
 
-# Create a ColumnTransformer
-preprocessor = ColumnTransformer(
-    transformers=[
-        ('cat', OneHotEncoder(), categorical_features),
-        ('num', 'passthrough', numerical_features)
-    ])
-
-# Create a pipeline with preprocessing and model
-pipeline = Pipeline(steps=[('preprocessor', preprocessor),
-                           ('model', RandomForestRegressor(random_state=42))])
-
-# Train the model
-x_train, x_test, y_train, y_test = train_test_split(x, y, train_size=0.8, random_state=42)
-pipeline.fit(x_train, y_train)
-
-
-# Prompt the user to input data to be predicted
-try:
-  sy = int(input('Enter the start year:'))
-  if sy >=2024:
-    print("Enter a suitable year(<2024).")
-    exit()
-except ValueError:
-  print("Invalid, please enter a valid year as an integer")
-
-dt = input("Enter the disater type:")
-dst = input('Enter the disaster subtype:')
-td = float(input('Enter the total damage(In USD):'))
-
-
-# Creating dataframe
+# Create a DataFrame for user input
 user_input = pd.DataFrame({
-    'Start Year':[sy],
-    'Disaster Type':[dt],
-    'Disaster Subtype':[dst],
-    "Total Damage ('000 US$)":[td]
+    'Start Year': [sy],
+    'Disaster Type': [dt],
+    'Disaster Subtype': [dst],
+    "Total Damage ('000 US$)": [td]
 })
 
+# Convert categorical features to category type
+user_input['Disaster Type'] = user_input['Disaster Type'].astype('category')
+user_input['Disaster Subtype'] = user_input['Disaster Subtype'].astype('category')
 
-  Prediction = pipeline.predict(user_input)
-  print('Predicted adjusted damage in USD:' , Prediction)
-
-#mse = mean_squared_error(y_test, Prediction)
-#mae = mean_absolute_error(y_test, Prediction)
-#r2 = r2_score(y_test, Prediction)
-
-#print("Mean Saquared Error:" , mse)
-#print("Mean Absolute Error" , mae)
-#print("R2 Score:" , r2)
+# Predict using the trained CatBoost model
+Prediction = best_catboost.predict(user_input)
+print('Predicted adjusted damage in USD:', Prediction)
